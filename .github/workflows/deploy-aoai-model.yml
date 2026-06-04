@@ -1,0 +1,344 @@
+# =============================================================================
+# Azure OpenAI Model Deployment Pipeline
+# =============================================================================
+# PURPOSE : Deploy an approved model to an existing Azure OpenAI resource.
+# TRIGGER : Manual (workflow_dispatch) — select a model from the approved list.
+# GATES   : "aoai-production" environment requires human approval before deploy.
+# =============================================================================
+
+name: 🤖 Deploy Azure OpenAI Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: "Select an approved model to deploy"
+        required: true
+        type: choice
+        options:
+          # ── GPT-4o family ───────────────────────────────────────────────────
+          - gpt-4o
+          - gpt-4o-mini
+          # ── GPT-4 family ────────────────────────────────────────────────────
+          - gpt-4
+          - gpt-4-32k
+          - gpt-4-turbo
+          # ── GPT-3.5 family ──────────────────────────────────────────────────
+          - gpt-35-turbo
+          - gpt-35-turbo-16k
+          # ── Embeddings ──────────────────────────────────────────────────────
+          - text-embedding-3-small
+          - text-embedding-3-large
+          - text-embedding-ada-002
+          # ── Image generation ────────────────────────────────────────────────
+          - dall-e-3
+          # ── Audio / Speech ──────────────────────────────────────────────────
+          - whisper
+
+      model_version:
+        description: "Model version (leave blank to use the latest approved version)"
+        required: false
+        type: string
+        default: ""
+
+      deployment_name:
+        description: "Deployment name (slug used in API calls, e.g. gpt-4o-prod)"
+        required: true
+        type: string
+
+      capacity_tpm:
+        description: "Capacity in Tokens-Per-Minute × 1 000 (e.g. 10 = 10 000 TPM)"
+        required: true
+        type: choice
+        options:
+          - "10"
+          - "20"
+          - "30"
+          - "50"
+          - "80"
+          - "100"
+          - "120"
+
+      scale_type:
+        description: "Scaling type for the deployment"
+        required: true
+        type: choice
+        options:
+          - Standard
+          - GlobalStandard
+          - ProvisionedManaged
+        default: Standard
+
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+        default: development
+
+# ---------------------------------------------------------------------------
+# Approved model → latest-known-version map (kept in one place for easy updates)
+# ---------------------------------------------------------------------------
+env:
+  # Maps model_name → default version when caller leaves model_version blank.
+  # Update these as Microsoft releases new API versions.
+  GPT_4O_VERSION:                   "2024-11-20"
+  GPT_4O_MINI_VERSION:              "2024-07-18"
+  GPT_4_VERSION:                    "turbo-2024-04-09"
+  GPT_4_32K_VERSION:                "0613"
+  GPT_4_TURBO_VERSION:              "2024-04-09"
+  GPT_35_TURBO_VERSION:             "0125"
+  GPT_35_TURBO_16K_VERSION:         "0613"
+  TEXT_EMBEDDING_3_SMALL_VERSION:   "1"
+  TEXT_EMBEDDING_3_LARGE_VERSION:   "1"
+  TEXT_EMBEDDING_ADA_002_VERSION:   "2"
+  DALL_E_3_VERSION:                 "3.0"
+  WHISPER_VERSION:                  "001"
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1 – Validate inputs & resolve model version
+  # ─────────────────────────────────────────────────────────────────────────
+  validate:
+    name: "🔍 Validate & Resolve Model Version"
+    runs-on: ubuntu-latest
+
+    outputs:
+      resolved_version:   ${{ steps.resolve.outputs.version }}
+      resource_group:     ${{ steps.env_vars.outputs.resource_group }}
+      aoai_resource_name: ${{ steps.env_vars.outputs.aoai_resource_name }}
+      azure_region:       ${{ steps.env_vars.outputs.azure_region }}
+
+    steps:
+      # ── 1a. Print summary ────────────────────────────────────────────────
+      - name: "📋 Log deployment request"
+        run: |
+          echo "=================================================="
+          echo "  Azure OpenAI Model Deployment Request"
+          echo "=================================================="
+          echo "  Model        : ${{ inputs.model_name }}"
+          echo "  Version      : ${{ inputs.model_version || 'auto-resolve' }}"
+          echo "  Deployment   : ${{ inputs.deployment_name }}"
+          echo "  Capacity TPM : ${{ inputs.capacity_tpm }}k"
+          echo "  Scale type   : ${{ inputs.scale_type }}"
+          echo "  Environment  : ${{ inputs.environment }}"
+          echo "  Triggered by : ${{ github.actor }}"
+          echo "  Run ID       : ${{ github.run_id }}"
+          echo "=================================================="
+
+      # ── 1b. Validate deployment name (alphanumeric + hyphens, ≤ 64 chars) ─
+      - name: "✅ Validate deployment name"
+        run: |
+          DNAME="${{ inputs.deployment_name }}"
+          if [[ ! "$DNAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9\-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$ ]]; then
+            echo "::error::Deployment name '$DNAME' is invalid."
+            echo "::error::Must be 1-64 chars, alphanumeric and hyphens only, cannot start/end with hyphen."
+            exit 1
+          fi
+          echo "✔ Deployment name '$DNAME' is valid."
+
+      # ── 1c. Resolve model version ─────────────────────────────────────────
+      - name: "🔖 Resolve model version"
+        id: resolve
+        run: |
+          USER_VERSION="${{ inputs.model_version }}"
+          MODEL="${{ inputs.model_name }}"
+
+          if [[ -n "$USER_VERSION" ]]; then
+            RESOLVED="$USER_VERSION"
+            echo "Using caller-supplied version: $RESOLVED"
+          else
+            # Map model name → env var holding default version
+            case "$MODEL" in
+              gpt-4o)                   RESOLVED="${GPT_4O_VERSION}" ;;
+              gpt-4o-mini)              RESOLVED="${GPT_4O_MINI_VERSION}" ;;
+              gpt-4)                    RESOLVED="${GPT_4_VERSION}" ;;
+              gpt-4-32k)               RESOLVED="${GPT_4_32K_VERSION}" ;;
+              gpt-4-turbo)              RESOLVED="${GPT_4_TURBO_VERSION}" ;;
+              gpt-35-turbo)             RESOLVED="${GPT_35_TURBO_VERSION}" ;;
+              gpt-35-turbo-16k)         RESOLVED="${GPT_35_TURBO_16K_VERSION}" ;;
+              text-embedding-3-small)   RESOLVED="${TEXT_EMBEDDING_3_SMALL_VERSION}" ;;
+              text-embedding-3-large)   RESOLVED="${TEXT_EMBEDDING_3_LARGE_VERSION}" ;;
+              text-embedding-ada-002)   RESOLVED="${TEXT_EMBEDDING_ADA_002_VERSION}" ;;
+              dall-e-3)                 RESOLVED="${DALL_E_3_VERSION}" ;;
+              whisper)                  RESOLVED="${WHISPER_VERSION}" ;;
+              *)
+                echo "::error::Unknown model '$MODEL'. Update the version map in the workflow."
+                exit 1 ;;
+            esac
+            echo "Auto-resolved version for '$MODEL': $RESOLVED"
+          fi
+
+          echo "version=$RESOLVED" >> "$GITHUB_OUTPUT"
+
+      # ── 1d. Resolve environment-specific Azure config ─────────────────────
+      - name: "🌍 Set environment-specific variables"
+        id: env_vars
+        run: |
+          ENV="${{ inputs.environment }}"
+          case "$ENV" in
+            development)
+              RG="${{ secrets.DEV_RESOURCE_GROUP }}"
+              AOAI="${{ secrets.DEV_AOAI_RESOURCE_NAME }}"
+              REGION="${{ secrets.DEV_AZURE_REGION }}"
+              ;;
+            staging)
+              RG="${{ secrets.STG_RESOURCE_GROUP }}"
+              AOAI="${{ secrets.STG_AOAI_RESOURCE_NAME }}"
+              REGION="${{ secrets.STG_AZURE_REGION }}"
+              ;;
+            production)
+              RG="${{ secrets.PROD_RESOURCE_GROUP }}"
+              AOAI="${{ secrets.PROD_AOAI_RESOURCE_NAME }}"
+              REGION="${{ secrets.PROD_AZURE_REGION }}"
+              ;;
+          esac
+
+          echo "resource_group=$RG"     >> "$GITHUB_OUTPUT"
+          echo "aoai_resource_name=$AOAI" >> "$GITHUB_OUTPUT"
+          echo "azure_region=$REGION"   >> "$GITHUB_OUTPUT"
+
+          echo "Resource Group : $RG"
+          echo "AOAI Resource  : $AOAI"
+          echo "Region         : $REGION"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2 – Human approval gate (environment protection rule)
+  # Configure "aoai-production" environment in:
+  #   GitHub → Repo Settings → Environments → Required reviewers
+  # ─────────────────────────────────────────────────────────────────────────
+  approval:
+    name: "🔐 Await Deployment Approval"
+    needs: validate
+    runs-on: ubuntu-latest
+    # The environment name is dynamic so dev/staging can be gate-free.
+    environment: "aoai-${{ inputs.environment }}"
+
+    steps:
+      - name: "Approval granted — proceeding to deployment"
+        run: |
+          echo "✔ Deployment approved by: ${{ github.actor }}"
+          echo "  Model      : ${{ inputs.model_name }} @ ${{ needs.validate.outputs.resolved_version }}"
+          echo "  Deployment : ${{ inputs.deployment_name }}"
+          echo "  Target     : ${{ needs.validate.outputs.aoai_resource_name }}"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3 – Deploy the model
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: "🚀 Deploy Model to Azure OpenAI"
+    needs: [validate, approval]
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 3a. Checkout (for the deployment script) ─────────────────────────
+      - name: "📥 Checkout repository"
+        uses: actions/checkout@v4
+
+      # ── 3b. Login to Azure ────────────────────────────────────────────────
+      - name: "🔑 Azure Login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── 3c. Check whether the deployment already exists ───────────────────
+      - name: "🔎 Check existing deployment"
+        id: check_existing
+        run: |
+          EXISTING=$(az cognitiveservices account deployment show \
+            --resource-group "${{ needs.validate.outputs.resource_group }}" \
+            --name            "${{ needs.validate.outputs.aoai_resource_name }}" \
+            --deployment-name "${{ inputs.deployment_name }}" \
+            --query "name" -o tsv 2>/dev/null || echo "")
+
+          if [[ -n "$EXISTING" ]]; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+            echo "⚠ Deployment '${{ inputs.deployment_name }}' already exists — will UPDATE."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ Deployment '${{ inputs.deployment_name }}' does not exist — will CREATE."
+          fi
+
+      # ── 3d. Deploy (create or update) ────────────────────────────────────
+      - name: "⚙️ Create / Update model deployment"
+        run: |
+          chmod +x .github/scripts/deploy_aoai_model.sh
+          .github/scripts/deploy_aoai_model.sh
+        env:
+          RESOURCE_GROUP:     ${{ needs.validate.outputs.resource_group }}
+          AOAI_RESOURCE_NAME: ${{ needs.validate.outputs.aoai_resource_name }}
+          MODEL_NAME:         ${{ inputs.model_name }}
+          MODEL_VERSION:      ${{ needs.validate.outputs.resolved_version }}
+          DEPLOYMENT_NAME:    ${{ inputs.deployment_name }}
+          CAPACITY_TPM:       ${{ inputs.capacity_tpm }}
+          SCALE_TYPE:         ${{ inputs.scale_type }}
+
+      # ── 3e. Verify deployment ─────────────────────────────────────────────
+      - name: "✅ Verify deployment health"
+        run: |
+          echo "Polling deployment status (max 5 min)..."
+          TIMEOUT=300
+          INTERVAL=15
+          ELAPSED=0
+
+          while [[ $ELAPSED -lt $TIMEOUT ]]; do
+            STATUS=$(az cognitiveservices account deployment show \
+              --resource-group "${{ needs.validate.outputs.resource_group }}" \
+              --name            "${{ needs.validate.outputs.aoai_resource_name }}" \
+              --deployment-name "${{ inputs.deployment_name }}" \
+              --query "properties.provisioningState" -o tsv 2>/dev/null || echo "Unknown")
+
+            echo "  [${ELAPSED}s] Status: $STATUS"
+
+            if [[ "$STATUS" == "Succeeded" ]]; then
+              echo "✔ Deployment succeeded!"
+              break
+            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Canceled" ]]; then
+              echo "::error::Deployment reached terminal state: $STATUS"
+              exit 1
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [[ $ELAPSED -ge $TIMEOUT ]]; then
+            echo "::error::Timeout waiting for deployment to succeed."
+            exit 1
+          fi
+
+      # ── 3f. Print deployment summary ──────────────────────────────────────
+      - name: "📊 Deployment summary"
+        if: success()
+        run: |
+          az cognitiveservices account deployment show \
+            --resource-group "${{ needs.validate.outputs.resource_group }}" \
+            --name            "${{ needs.validate.outputs.aoai_resource_name }}" \
+            --deployment-name "${{ inputs.deployment_name }}" \
+            --output table
+
+          echo ""
+          echo "=================================================="
+          echo "  ✅ Deployment Complete"
+          echo "=================================================="
+          echo "  Resource : ${{ needs.validate.outputs.aoai_resource_name }}"
+          echo "  Model    : ${{ inputs.model_name }} @ ${{ needs.validate.outputs.resolved_version }}"
+          echo "  Name     : ${{ inputs.deployment_name }}"
+          echo "  Capacity : ${{ inputs.capacity_tpm }}k TPM"
+          echo "  Actor    : ${{ github.actor }}"
+          echo "  Run URL  : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "=================================================="
+
+      # ── 3g. Azure logout ──────────────────────────────────────────────────
+      - name: "🔒 Azure Logout"
+        if: always()
+        run: az logout
