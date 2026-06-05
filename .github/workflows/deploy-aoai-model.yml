@@ -39,21 +39,20 @@ on:
         description: Deployment name to create or delete
         required: true
         type: string
-      model_version_override:
-        description: Optional deploy override. Leave blank to use the environment config.
-        required: false
-        type: string
-        default: ""
       capacity_tpm_override:
-        description: Optional deploy override in thousands of TPM. Leave blank to use the environment config.
+        description: Capacity TPM override in thousands (optional)
         required: false
         type: string
         default: ""
       scale_type_override:
-        description: Optional deploy override. Leave blank to use the environment config.
+        description: Scale type override (optional)
         required: false
-        type: string
-        default: ""
+        type: choice
+        options:
+          - ""
+          - Standard
+          - GlobalStandard
+          - ProvisionedManaged
       confirm_delete:
         description: Required only for delete
         required: true
@@ -92,7 +91,6 @@ jobs:
           CONFIG_FILE: env/${{ inputs.environment }}/config.yml
           MODEL_NAME: ${{ inputs.model_name }}
           DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
-          MODEL_VERSION_OVERRIDE: ${{ inputs.model_version_override }}
           CAPACITY_TPM_OVERRIDE: ${{ inputs.capacity_tpm_override }}
           SCALE_TYPE_OVERRIDE: ${{ inputs.scale_type_override }}
           CONFIRM_DELETE: ${{ inputs.confirm_delete }}
@@ -162,7 +160,7 @@ jobs:
                   sys.exit(1)
 
               model = approved_models[model_name]
-              model_version = os.environ["MODEL_VERSION_OVERRIDE"] or str(model["version"])
+              model_version = str(model["version"])
               capacity_tpm = os.environ["CAPACITY_TPM_OVERRIDE"] or str(model["capacity_tpm"])
               scale_type = os.environ["SCALE_TYPE_OVERRIDE"] or str(model["scale_type"])
 
