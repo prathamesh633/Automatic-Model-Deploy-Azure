@@ -112,6 +112,8 @@ jobs:
             exit 1
           fi
 
+          python3 -m pip install pyyaml
+
           python3 <<'PY'
           import os
           import sys
@@ -223,32 +225,17 @@ jobs:
             exit 1
           fi
 
-          payload_file=$(mktemp)
-          trap 'rm -f "$payload_file"' EXIT
-
-          cat > "$payload_file" <<EOF
-          {
-            "sku": {
-              "name": "${{ needs.prepare.outputs.scale_type }}",
-              "capacity": ${{ needs.prepare.outputs.capacity_tpm }}
-            },
-            "properties": {
-              "model": {
-                "format": "OpenAI",
-                "name": "${{ needs.prepare.outputs.model_name }}",
-                "version": "${{ needs.prepare.outputs.model_version }}"
-              }
-            }
-          }
-          EOF
-
           echo "Deploying ${{ needs.prepare.outputs.model_name }}:${{ needs.prepare.outputs.model_version }} to ${{ needs.prepare.outputs.aoai_resource_name }} as ${{ needs.prepare.outputs.deployment_name }}"
 
           az cognitiveservices account deployment create \
             --resource-group "${{ needs.prepare.outputs.resource_group }}" \
             --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
             --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
-            --properties @"$payload_file"
+            --model-name "${{ needs.prepare.outputs.model_name }}" \
+            --model-version "${{ needs.prepare.outputs.model_version }}" \
+            --model-format OpenAI \
+            --sku-name "${{ needs.prepare.outputs.scale_type }}" \
+            --sku-capacity ${{ needs.prepare.outputs.capacity_tpm }}
 
       - name: Wait for deployment
         run: |
