@@ -2,6 +2,9 @@ name: Manage Azure OpenAI deployments
 
 on:
   workflow_dispatch:
+    # Inputs shown in the GitHub Actions "Run workflow" form.
+    # The workflow uses these values to decide whether to deploy or delete,
+    # which environment config to load, and whether any deploy settings should be overridden.
     inputs:
       action:
         description: Choose whether to deploy or delete a model deployment
@@ -66,6 +69,8 @@ permissions:
   id-token: write
 
 jobs:
+  # Resolves the selected environment config, validates the inputs,
+  # and prepares the values that the deploy/delete jobs will use.
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -81,6 +86,7 @@ jobs:
       scale_type: ${{ steps.prepare.outputs.scale_type }}
 
     steps:
+      # Required so the workflow can read env/<environment>/config.yml from the repo.
       - uses: actions/checkout@v4
 
       - name: Load environment config
@@ -112,8 +118,11 @@ jobs:
             exit 1
           fi
 
+          # Install YAML parsing support so the workflow can read the environment config file.
           python3 -m pip install pyyaml
 
+          # Read the selected environment config, validate model choices for deploy,
+          # and publish normalized values for later jobs through GITHUB_OUTPUT.
           python3 <<'PY'
           import os
           import sys
@@ -197,6 +206,8 @@ jobs:
               handle.write("\n".join(summary) + "\n")
           PY
 
+  # Runs only when the requested action is "deploy".
+  # Uses the resolved values from the prepare job and creates or updates the deployment in Azure OpenAI.
   deploy:
     needs: prepare
     if: needs.prepare.outputs.action == 'deploy'
@@ -204,6 +215,7 @@ jobs:
     environment: ${{ needs.prepare.outputs.github_environment }}
 
     steps:
+      # Authenticates to Azure using the repo's federated identity / service principal settings.
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -214,6 +226,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Fail early if the Azure OpenAI resource is missing or still provisioning.
           state=$(az cognitiveservices account show \
             --resource-group "${{ needs.prepare.outputs.resource_group }}" \
             --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
@@ -241,6 +254,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Poll until Azure marks the deployment as ready or returns a terminal failure state.
           timeout=300
           interval=15
           elapsed=0
@@ -275,6 +289,7 @@ jobs:
       - name: Show deployment
         if: success()
         run: |
+          # Prints the final deployment details for quick verification in the Actions logs.
           az cognitiveservices account deployment show \
             --resource-group "${{ needs.prepare.outputs.resource_group }}" \
             --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
@@ -285,6 +300,8 @@ jobs:
         if: always()
         run: az logout
 
+  # Runs only when the requested action is "delete".
+  # Verifies the deployment exists before attempting deletion, then waits until Azure removes it.
   delete:
     needs: prepare
     if: needs.prepare.outputs.action == 'delete'
@@ -292,6 +309,7 @@ jobs:
     environment: ${{ needs.prepare.outputs.github_environment }}
 
     steps:
+      # Authenticates to Azure before issuing delete commands.
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -302,6 +320,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Confirm the deployment exists so we can return a clearer error if the name is wrong.
           if ! az cognitiveservices account deployment show \
             --resource-group "${{ needs.prepare.outputs.resource_group }}" \
             --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
@@ -322,6 +341,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Poll until the deployment is no longer returned by Azure.
           timeout=300
           interval=15
           elapsed=0
