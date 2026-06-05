@@ -10,47 +10,71 @@ approved_models:
     version: "2024-11-20"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   gpt-4o-mini:
     version: "2024-07-18"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   gpt-4:
     version: "turbo-2024-04-09"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   gpt-4-32k:
     version: "0613"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   gpt-4-turbo:
     version: "2024-04-09"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   gpt-35-turbo:
     version: "0125"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   gpt-35-turbo-16k:
     version: "0613"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   text-embedding-3-small:
     version: "1"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   text-embedding-3-large:
     version: "1"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   text-embedding-ada-002:
     version: "2"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   dall-e-3:
     version: "3.0"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""
   whisper:
     version: "001"
     capacity_tpm: 10
     scale_type: Standard
+    capacity_tpm_override: ""
+    scale_type_override: ""

@@ -78,6 +78,8 @@ approved_models:
     version: "2024-11-20"
     capacity_tpm: 10          # Default Tokens Per Minute (TPM) capacity in thousands (e.g., 10 = 10,000 TPM)
     scale_type: Standard      # Default Scale Type (Standard, GlobalStandard, ProvisionedManaged)
+    capacity_tpm_override: ""
+    scale_type_override: ""
   # Add other models as required...
 ```
 
