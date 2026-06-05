@@ -1,11 +1,26 @@
-name: Deploy Azure OpenAI model
+name: Manage Azure OpenAI deployments
 
 on:
   workflow_dispatch:
     inputs:
-      model_name:
-        description: Approved model to deploy
+      action:
+        description: Choose whether to deploy or delete a model deployment
         required: true
+        type: choice
+        options:
+          - deploy
+          - delete
+      environment:
+        description: Choose the target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+      model_name:
+        description: Approved model to deploy. Ignored for delete.
+        required: false
         type: choice
         options:
           - gpt-4o
@@ -20,165 +35,222 @@ on:
           - text-embedding-ada-002
           - dall-e-3
           - whisper
-      model_version:
-        description: Leave blank to use the default approved version
+      deployment_name:
+        description: Deployment name to create or delete
+        required: true
+        type: string
+      model_version_override:
+        description: Optional deploy override. Leave blank to use the environment config.
         required: false
         type: string
         default: ""
-      deployment_name:
-        description: Deployment name used in Azure OpenAI
-        required: true
+      capacity_tpm_override:
+        description: Optional deploy override in thousands of TPM. Leave blank to use the environment config.
+        required: false
         type: string
-      capacity_tpm:
-        description: Capacity in thousands of TPM
+        default: ""
+      scale_type_override:
+        description: Optional deploy override. Leave blank to use the environment config.
+        required: false
+        type: string
+        default: ""
+      confirm_delete:
+        description: Required only for delete
         required: true
         type: choice
         options:
-          - "10"
-          - "20"
-          - "30"
-          - "50"
-          - "80"
-          - "100"
-          - "120"
-      scale_type:
-        description: Deployment scale type
-        required: true
-        type: choice
-        options:
-          - Standard
-          - GlobalStandard
-          - ProvisionedManaged
-        default: Standard
-      environment:
-        description: Target environment
-        required: true
-        type: choice
-        options:
-          - development
-          - staging
-          - production
-        default: development
+          - "no"
+          - "yes"
 
 permissions:
   contents: read
   id-token: write
 
-env:
-  GPT_4O_VERSION: "2024-11-20"
-  GPT_4O_MINI_VERSION: "2024-07-18"
-  GPT_4_VERSION: "turbo-2024-04-09"
-  GPT_4_32K_VERSION: "0613"
-  GPT_4_TURBO_VERSION: "2024-04-09"
-  GPT_35_TURBO_VERSION: "0125"
-  GPT_35_TURBO_16K_VERSION: "0613"
-  TEXT_EMBEDDING_3_SMALL_VERSION: "1"
-  TEXT_EMBEDDING_3_LARGE_VERSION: "1"
-  TEXT_EMBEDDING_ADA_002_VERSION: "2"
-  DALL_E_3_VERSION: "3.0"
-  WHISPER_VERSION: "001"
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      resolved_version: ${{ steps.prepare.outputs.resolved_version }}
+      action: ${{ steps.prepare.outputs.action }}
+      github_environment: ${{ steps.prepare.outputs.github_environment }}
+      subscription_id: ${{ steps.prepare.outputs.subscription_id }}
       resource_group: ${{ steps.prepare.outputs.resource_group }}
       aoai_resource_name: ${{ steps.prepare.outputs.aoai_resource_name }}
-
-    steps:
-      - name: Validate inputs
-        id: prepare
-        run: |
-          set -euo pipefail
-
-          deployment_name="${{ inputs.deployment_name }}"
-          model_name="${{ inputs.model_name }}"
-          model_version="${{ inputs.model_version }}"
-
-          if [[ ! "$deployment_name" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$ ]]; then
-            echo "::error::Deployment name must be 1-64 characters, alphanumeric or hyphen, and cannot start or end with a hyphen."
-            exit 1
-          fi
-
-          if [[ -z "$model_version" ]]; then
-            case "$model_name" in
-              gpt-4o) model_version="${GPT_4O_VERSION}" ;;
-              gpt-4o-mini) model_version="${GPT_4O_MINI_VERSION}" ;;
-              gpt-4) model_version="${GPT_4_VERSION}" ;;
-              gpt-4-32k) model_version="${GPT_4_32K_VERSION}" ;;
-              gpt-4-turbo) model_version="${GPT_4_TURBO_VERSION}" ;;
-              gpt-35-turbo) model_version="${GPT_35_TURBO_VERSION}" ;;
-              gpt-35-turbo-16k) model_version="${GPT_35_TURBO_16K_VERSION}" ;;
-              text-embedding-3-small) model_version="${TEXT_EMBEDDING_3_SMALL_VERSION}" ;;
-              text-embedding-3-large) model_version="${TEXT_EMBEDDING_3_LARGE_VERSION}" ;;
-              text-embedding-ada-002) model_version="${TEXT_EMBEDDING_ADA_002_VERSION}" ;;
-              dall-e-3) model_version="${DALL_E_3_VERSION}" ;;
-              whisper) model_version="${WHISPER_VERSION}" ;;
-              *)
-                echo "::error::No default version configured for '$model_name'."
-                exit 1
-                ;;
-            esac
-          fi
-
-          case "${{ inputs.environment }}" in
-            development)
-              resource_group="${{ secrets.DEV_RESOURCE_GROUP }}"
-              aoai_resource_name="${{ secrets.DEV_AOAI_RESOURCE_NAME }}"
-              ;;
-            staging)
-              resource_group="${{ secrets.STG_RESOURCE_GROUP }}"
-              aoai_resource_name="${{ secrets.STG_AOAI_RESOURCE_NAME }}"
-              ;;
-            production)
-              resource_group="${{ secrets.PROD_RESOURCE_GROUP }}"
-              aoai_resource_name="${{ secrets.PROD_AOAI_RESOURCE_NAME }}"
-              ;;
-            *)
-              echo "::error::Unsupported environment '${{ inputs.environment }}'."
-              exit 1
-              ;;
-          esac
-
-          if [[ -z "$resource_group" || -z "$aoai_resource_name" ]]; then
-            echo "::error::Missing Azure OpenAI configuration for '${{ inputs.environment }}'."
-            exit 1
-          fi
-
-          echo "resolved_version=$model_version" >> "$GITHUB_OUTPUT"
-          echo "resource_group=$resource_group" >> "$GITHUB_OUTPUT"
-          echo "aoai_resource_name=$aoai_resource_name" >> "$GITHUB_OUTPUT"
-
-          echo "Model: $model_name"
-          echo "Version: $model_version"
-          echo "Deployment: $deployment_name"
-          echo "Environment: ${{ inputs.environment }}"
-
-  deploy:
-    needs: prepare
-    runs-on: ubuntu-latest
-    environment: aoai-${{ inputs.environment }}
+      deployment_name: ${{ steps.prepare.outputs.deployment_name }}
+      model_name: ${{ steps.prepare.outputs.model_name }}
+      model_version: ${{ steps.prepare.outputs.model_version }}
+      capacity_tpm: ${{ steps.prepare.outputs.capacity_tpm }}
+      scale_type: ${{ steps.prepare.outputs.scale_type }}
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load environment config
+        id: prepare
+        env:
+          ACTION: ${{ inputs.action }}
+          TARGET_ENV: ${{ inputs.environment }}
+          CONFIG_FILE: env/${{ inputs.environment }}/config.yml
+          MODEL_NAME: ${{ inputs.model_name }}
+          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+          MODEL_VERSION_OVERRIDE: ${{ inputs.model_version_override }}
+          CAPACITY_TPM_OVERRIDE: ${{ inputs.capacity_tpm_override }}
+          SCALE_TYPE_OVERRIDE: ${{ inputs.scale_type_override }}
+          CONFIRM_DELETE: ${{ inputs.confirm_delete }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo "::error::Missing config file: $CONFIG_FILE"
+            exit 1
+          fi
+
+          if [[ ! "$DEPLOYMENT_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$ ]]; then
+            echo "::error::Deployment name must be 1-64 characters, alphanumeric or hyphen, and cannot start or end with a hyphen."
+            exit 1
+          fi
+
+          if [[ "$ACTION" == "delete" && "$CONFIRM_DELETE" != "yes" ]]; then
+            echo "::error::Set confirm_delete to 'yes' to delete an existing deployment."
+            exit 1
+          fi
+
+          python3 <<'PY'
+          import os
+          import sys
+          import yaml
+
+          with open(os.environ["CONFIG_FILE"], "r", encoding="utf-8") as handle:
+              config = yaml.safe_load(handle)
+
+          action = os.environ["ACTION"]
+          target_env = os.environ["TARGET_ENV"]
+          model_name = os.environ.get("MODEL_NAME", "")
+          deployment_name = os.environ["DEPLOYMENT_NAME"]
+
+          azure = config["azure"]
+          outputs = {
+              "action": action,
+              "github_environment": config["github_environment"],
+              "subscription_id": str(azure["subscription_id"]),
+              "resource_group": str(azure["resource_group"]),
+              "aoai_resource_name": str(azure["aoai_resource_name"]),
+              "deployment_name": deployment_name,
+              "model_name": "",
+              "model_version": "",
+              "capacity_tpm": "",
+              "scale_type": "",
+          }
+
+          summary = [
+              "### Azure OpenAI request",
+              f"- Action: {action}",
+              f"- Environment: {target_env}",
+              f"- Subscription: {outputs['subscription_id']}",
+              f"- Resource group: {outputs['resource_group']}",
+              f"- Azure OpenAI resource: {outputs['aoai_resource_name']}",
+              f"- Deployment name: {deployment_name}",
+          ]
+
+          if action == "deploy":
+              if not model_name:
+                  print("::error::model_name is required when action is deploy.")
+                  sys.exit(1)
+
+              approved_models = config["approved_models"]
+              if model_name not in approved_models:
+                  print(f"::error::Model '{model_name}' is not approved for {target_env}.")
+                  sys.exit(1)
+
+              model = approved_models[model_name]
+              model_version = os.environ["MODEL_VERSION_OVERRIDE"] or str(model["version"])
+              capacity_tpm = os.environ["CAPACITY_TPM_OVERRIDE"] or str(model["capacity_tpm"])
+              scale_type = os.environ["SCALE_TYPE_OVERRIDE"] or str(model["scale_type"])
+
+              if not capacity_tpm.isdigit():
+                  print("::error::capacity_tpm must be a whole number.")
+                  sys.exit(1)
+
+              allowed_scale_types = {"Standard", "GlobalStandard", "ProvisionedManaged"}
+              if scale_type not in allowed_scale_types:
+                  print("::error::scale_type must be one of: Standard, GlobalStandard, ProvisionedManaged.")
+                  sys.exit(1)
+
+              outputs["model_name"] = model_name
+              outputs["model_version"] = model_version
+              outputs["capacity_tpm"] = capacity_tpm
+              outputs["scale_type"] = scale_type
+
+              summary.extend(
+                  [
+                      f"- Model: {model_name}",
+                      f"- Version: {model_version}",
+                      f"- Capacity TPM: {capacity_tpm}",
+                      f"- Scale type: {scale_type}",
+                  ]
+              )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              for key, value in outputs.items():
+                  handle.write(f"{key}={value}\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("\n".join(summary) + "\n")
+          PY
+
+  deploy:
+    needs: prepare
+    if: needs.prepare.outputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.prepare.outputs.github_environment }}
+
+    steps:
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          subscription-id: ${{ needs.prepare.outputs.subscription_id }}
 
       - name: Deploy model
-        run: bash .github/scripts/deploy_aoai_model.sh
-        env:
-          RESOURCE_GROUP: ${{ needs.prepare.outputs.resource_group }}
-          AOAI_RESOURCE_NAME: ${{ needs.prepare.outputs.aoai_resource_name }}
-          MODEL_NAME: ${{ inputs.model_name }}
-          MODEL_VERSION: ${{ needs.prepare.outputs.resolved_version }}
-          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
-          CAPACITY_TPM: ${{ inputs.capacity_tpm }}
-          SCALE_TYPE: ${{ inputs.scale_type }}
+        run: |
+          set -euo pipefail
+
+          state=$(az cognitiveservices account show \
+            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
+            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
+            --query properties.provisioningState \
+            -o tsv 2>/dev/null || echo "NotFound")
+
+          if [[ "$state" != "Succeeded" ]]; then
+            echo "::error::Azure OpenAI resource '${{ needs.prepare.outputs.aoai_resource_name }}' is not ready (state: $state)."
+            exit 1
+          fi
+
+          payload_file=$(mktemp)
+          trap 'rm -f "$payload_file"' EXIT
+
+          cat > "$payload_file" <<EOF
+          {
+            "sku": {
+              "name": "${{ needs.prepare.outputs.scale_type }}",
+              "capacity": ${{ needs.prepare.outputs.capacity_tpm }}
+            },
+            "properties": {
+              "model": {
+                "format": "OpenAI",
+                "name": "${{ needs.prepare.outputs.model_name }}",
+                "version": "${{ needs.prepare.outputs.model_version }}"
+              }
+            }
+          }
+          EOF
+
+          echo "Deploying ${{ needs.prepare.outputs.model_name }}:${{ needs.prepare.outputs.model_version }} to ${{ needs.prepare.outputs.aoai_resource_name }} as ${{ needs.prepare.outputs.deployment_name }}"
+
+          az cognitiveservices account deployment create \
+            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
+            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
+            --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+            --properties @"$payload_file"
 
       - name: Wait for deployment
         run: |
@@ -192,7 +264,7 @@ jobs:
             status=$(az cognitiveservices account deployment show \
               --resource-group "${{ needs.prepare.outputs.resource_group }}" \
               --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-              --deployment-name "${{ inputs.deployment_name }}" \
+              --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
               --query properties.provisioningState \
               -o tsv 2>/dev/null || echo "Unknown")
 
@@ -221,8 +293,71 @@ jobs:
           az cognitiveservices account deployment show \
             --resource-group "${{ needs.prepare.outputs.resource_group }}" \
             --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-            --deployment-name "${{ inputs.deployment_name }}" \
+            --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
             --output table
+
+      - name: Logout
+        if: always()
+        run: az logout
+
+  delete:
+    needs: prepare
+    if: needs.prepare.outputs.action == 'delete'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.prepare.outputs.github_environment }}
+
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ needs.prepare.outputs.subscription_id }}
+
+      - name: Delete deployment
+        run: |
+          set -euo pipefail
+
+          if ! az cognitiveservices account deployment show \
+            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
+            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
+            --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+            --output none 2>/dev/null; then
+            echo "::error::Deployment '${{ needs.prepare.outputs.deployment_name }}' was not found."
+            exit 1
+          fi
+
+          echo "Deleting deployment ${{ needs.prepare.outputs.deployment_name }} from ${{ needs.prepare.outputs.aoai_resource_name }}"
+
+          az cognitiveservices account deployment delete \
+            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
+            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
+            --deployment-name "${{ needs.prepare.outputs.deployment_name }}"
+
+      - name: Wait for deletion
+        run: |
+          set -euo pipefail
+
+          timeout=300
+          interval=15
+          elapsed=0
+
+          while (( elapsed < timeout )); do
+            if ! az cognitiveservices account deployment show \
+              --resource-group "${{ needs.prepare.outputs.resource_group }}" \
+              --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
+              --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+              --output none 2>/dev/null; then
+              echo "Deployment deleted."
+              exit 0
+            fi
+
+            echo "Waiting for deletion..."
+            sleep "$interval"
+            elapsed=$((elapsed + interval))
+          done
+
+          echo "::error::Timed out waiting for deletion."
+          exit 1
 
       - name: Logout
         if: always()

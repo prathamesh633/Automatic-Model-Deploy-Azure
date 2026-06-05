@@ -1,0 +1,56 @@
+github_environment: aoai-dev
+
+azure:
+  subscription_id: "00000000-0000-0000-0000-000000000000"
+  resource_group: "rg-aoai-dev"
+  aoai_resource_name: "aoai-dev"
+
+approved_models:
+  gpt-4o:
+    version: "2024-11-20"
+    capacity_tpm: 10
+    scale_type: Standard
+  gpt-4o-mini:
+    version: "2024-07-18"
+    capacity_tpm: 10
+    scale_type: Standard
+  gpt-4:
+    version: "turbo-2024-04-09"
+    capacity_tpm: 10
+    scale_type: Standard
+  gpt-4-32k:
+    version: "0613"
+    capacity_tpm: 10
+    scale_type: Standard
+  gpt-4-turbo:
+    version: "2024-04-09"
+    capacity_tpm: 10
+    scale_type: Standard
+  gpt-35-turbo:
+    version: "0125"
+    capacity_tpm: 10
+    scale_type: Standard
+  gpt-35-turbo-16k:
+    version: "0613"
+    capacity_tpm: 10
+    scale_type: Standard
+  text-embedding-3-small:
+    version: "1"
+    capacity_tpm: 10
+    scale_type: Standard
+  text-embedding-3-large:
+    version: "1"
+    capacity_tpm: 10
+    scale_type: Standard
+  text-embedding-ada-002:
+    version: "2"
+    capacity_tpm: 10
+    scale_type: Standard
+  dall-e-3:
+    version: "3.0"
+    capacity_tpm: 10
+    scale_type: Standard
+  whisper:
+    version: "001"
+    capacity_tpm: 10
+    scale_type: Standard
