@@ -11,14 +11,22 @@ The pipeline uses **OpenID Connect (OIDC)** to securely authenticate with Azure 
 ```text
 ├── .github/
 │   └── workflows/
-│       └── deploy-aoai-model.yml  # The GitHub Actions pipeline definition
+│       ├── deploy-aisearch.yml    # Azure AI Search pipeline definition
+│       └── deploy-aoai-model.yml  # Azure OpenAI model pipeline definition
 ├── env/
 │   ├── dev/
-│   │   └── config.yml             # Development environment configuration
+│   │   └── config.yml             # Dev environment config (OpenAI)
 │   ├── uat/
-│   │   └── config.yml             # UAT environment configuration
+│   │   └── config.yml             # UAT environment config (OpenAI)
 │   └── prod/
-│       └── config.yml             # Production environment configuration
+│       └── config.yml             # Prod environment config (OpenAI)
+├── env-2/
+│   ├── dev/
+│   │   └── config.yml             # Dev environment config (AI Search)
+│   ├── uat/
+│   │   └── config.yml             # UAT environment config (AI Search)
+│   └── prod/
+│       └── config.yml             # Prod environment config (AI Search)
 └── README.md                      # This documentation file
 ```
 
@@ -85,11 +93,11 @@ approved_models:
 
 ---
 
-## How to Run the Pipeline
+## How to Run the Pipelines
 
-The pipeline is triggered manually via **Workflow Dispatch** in GitHub.
+The pipelines are triggered manually via **Workflow Dispatch** in GitHub.
 
-### Step-by-Step Instructions
+### 1. Azure OpenAI Model Deployment
 1. Navigate to the **Actions** tab in your GitHub repository.
 2. Select **Manage Azure OpenAI deployments** from the sidebar.
 3. Click the **Run workflow** dropdown on the right.
@@ -103,19 +111,34 @@ The pipeline is triggered manually via **Workflow Dispatch** in GitHub.
    * **Required only for delete**: Set to `yes` if you chose `delete` as the action (safety confirmation block).
 5. Click **Run workflow**.
 
+### 2. Azure AI Search Service Deployment
+1. Navigate to the **Actions** tab in your GitHub repository.
+2. Select **Manage Azure AI Search deployments** from the sidebar.
+3. Click the **Run workflow** dropdown on the right.
+4. Fill out the input form:
+   * **Choose whether to deploy or delete AI Search service**: `deploy` or `delete`
+   * **Choose the target environment**: `dev`, `uat`, or `prod`
+   * **Search service name override**: Optional custom name for the service.
+   * **SKU tier override**: Optional pricing tier (e.g., `basic`, `standard`).
+   * **Replica count override**: Optional number of replicas.
+   * **Partition count override**: Optional number of partitions.
+   * **Required only for delete**: Set to `yes` if you chose `delete` as the action (safety confirmation block).
+5. Click **Run workflow**.
+
 ---
 
-## How the Pipeline Works Under the Hood
+## How the Pipelines Work Under the Hood
 
 ### Phase 1: Prepare & Validate (`prepare` job)
-* Loads the targeted environment's YAML configuration.
-* Checks that the deployment name conforms to naming conventions.
-* Validates that the requested model is approved for that environment.
+* Loads the targeted environment's YAML configuration (from `env/` for OpenAI or `env-2/` for AI Search).
+* Validates inputs (such as service naming rules, action configurations, and safety deletion blocks).
 * Generates output variables and logs a summarized markdown report to the GitHub Actions workflow run summary.
 
 ### Phase 2: Execution (`deploy` or `delete` job)
 * **Authentication**: Logs into Azure using the repository's federated identity (`azure/login@v2`).
-* **Availability Check**: Verifies that the Azure OpenAI resource is active and ready.
-* **Deployment/Deletion**: Executes the Azure CLI `az cognitiveservices account deployment` command to create or delete the deployment.
+* **Deployment/Deletion**: Executes the Azure CLI to create or delete the resource/deployment.
+  * For OpenAI: `az cognitiveservices account deployment create/delete`.
+  * For AI Search: Executes `az search service create/delete` directly.
 * **Status Polling**: Polls the Azure resource manager every 15 seconds (for up to 5 minutes) to ensure the operation completes successfully.
 * **Post-Execution**: Logs out of the session.
+

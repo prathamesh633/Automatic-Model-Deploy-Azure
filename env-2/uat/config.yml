@@ -1,0 +1,10 @@
+---
+github_environment: search-uat
+
+azure:
+  subscription_id: "00000000-0000-0000-0000-000000000000"
+  resource_group: "rg-search-uat"
+
+search_service:
+  service_name: "search-service-uat"
+  api_version: "2024-07-01"

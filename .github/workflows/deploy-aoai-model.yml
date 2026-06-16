@@ -1,10 +1,12 @@
+---
 name: Manage Azure OpenAI deployments
 
-on:
+"on":
   workflow_dispatch:
     # Inputs shown in the GitHub Actions "Run workflow" form.
     # The workflow uses these values to decide whether to deploy or delete,
-    # which environment config to load, and whether any deploy settings should be overridden.
+    # which environment config to load, and whether any deploy settings
+    # should be overridden.
     inputs:
       action:
         description: Choose whether to deploy or delete a model deployment
@@ -86,7 +88,8 @@ jobs:
       scale_type: ${{ steps.prepare.outputs.scale_type }}
 
     steps:
-      # Required so the workflow can read env/<environment>/config.yml from the repo.
+      # Required so the workflow can read env/<environment>/config.yml
+      # from the repo.
       - uses: actions/checkout@v4
 
       - name: Load environment config
@@ -108,20 +111,26 @@ jobs:
             exit 1
           fi
 
-          if [[ ! "$DEPLOYMENT_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$ ]]; then
-            echo "::error::Deployment name must be 1-64 characters, alphanumeric or hyphen, and cannot start or end with a hyphen."
+          # 1-64 characters, alphanumeric/hyphen, no start/end hyphen.
+          pattern='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$'
+          if [[ ! "$DEPLOYMENT_NAME" =~ $pattern ]]; then
+            echo "::error::Deployment name must be 1-64 characters," \
+              "alphanumeric or hyphen, and cannot start or end with a hyphen."
             exit 1
           fi
 
           if [[ "$ACTION" == "delete" && "$CONFIRM_DELETE" != "yes" ]]; then
-            echo "::error::Set confirm_delete to 'yes' to delete an existing deployment."
+            echo "::error::Set confirm_delete to 'yes' to delete" \
+              "an existing deployment."
             exit 1
           fi
 
-          # Install YAML parsing support so the workflow can read the environment config file.
+          # Install YAML parsing support so the workflow can read the
+          # environment config file.
           python3 -m pip install pyyaml
 
-          # Read the selected environment config, validate model choices for deploy,
+          # Read the selected environment config, validate model choices
+          # for deploy,
           # and publish normalized values for later jobs through GITHUB_OUTPUT.
           python3 <<'PY'
           import os
@@ -162,26 +171,44 @@ jobs:
 
           if action == "deploy":
               if not model_name:
-                  print("::error::model_name is required when action is deploy.")
+                  print(
+                      "::error::model_name is required when action is deploy."
+                  )
                   sys.exit(1)
 
               approved_models = config["approved_models"]
               if model_name not in approved_models:
-                  print(f"::error::Model '{model_name}' is not approved for {target_env}.")
+                  print(
+                      f"::error::Model '{model_name}' is not approved for "
+                      f"{target_env}."
+                  )
                   sys.exit(1)
 
               model = approved_models[model_name]
               model_version = str(model["version"])
-              capacity_tpm = os.environ["CAPACITY_TPM_OVERRIDE"] or str(model["capacity_tpm"])
-              scale_type = os.environ["SCALE_TYPE_OVERRIDE"] or str(model["scale_type"])
+              capacity_tpm = (
+                  os.environ["CAPACITY_TPM_OVERRIDE"]
+                  or str(model["capacity_tpm"])
+              )
+              scale_type = (
+                  os.environ["SCALE_TYPE_OVERRIDE"]
+                  or str(model["scale_type"])
+              )
 
               if not capacity_tpm.isdigit():
                   print("::error::capacity_tpm must be a whole number.")
                   sys.exit(1)
 
-              allowed_scale_types = {"Standard", "GlobalStandard", "ProvisionedManaged"}
+              allowed_scale_types = {
+                  "Standard",
+                  "GlobalStandard",
+                  "ProvisionedManaged",
+              }
               if scale_type not in allowed_scale_types:
-                  print("::error::scale_type must be one of: Standard, GlobalStandard, ProvisionedManaged.")
+                  print(
+                      "::error::scale_type must be one of: Standard, "
+                      "GlobalStandard, ProvisionedManaged."
+                  )
                   sys.exit(1)
 
               outputs["model_name"] = model_name
@@ -198,16 +225,21 @@ jobs:
                   ]
               )
 
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+          with open(
+              os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8"
+          ) as handle:
               for key, value in outputs.items():
                   handle.write(f"{key}={value}\n")
 
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+          with open(
+              os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8"
+          ) as handle:
               handle.write("\n".join(summary) + "\n")
           PY
 
   # Runs only when the requested action is "deploy".
-  # Uses the resolved values from the prepare job and creates or updates the deployment in Azure OpenAI.
+  # Uses the resolved values from the prepare job and creates or updates
+  # the deployment in Azure OpenAI.
   deploy:
     needs: prepare
     if: needs.prepare.outputs.action == 'deploy'
@@ -215,7 +247,8 @@ jobs:
     environment: ${{ needs.prepare.outputs.github_environment }}
 
     steps:
-      # Authenticates to Azure using the repo's federated identity / service principal settings.
+      # Authenticates to Azure using the repo's federated identity /
+      # service principal settings.
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -223,47 +256,62 @@ jobs:
           subscription-id: ${{ needs.prepare.outputs.subscription_id }}
 
       - name: Deploy model
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          AOAI: ${{ needs.prepare.outputs.aoai_resource_name }}
+          DEP: ${{ needs.prepare.outputs.deployment_name }}
+          MODEL: ${{ needs.prepare.outputs.model_name }}
+          VER: ${{ needs.prepare.outputs.model_version }}
+          SCALE: ${{ needs.prepare.outputs.scale_type }}
+          CAPACITY: ${{ needs.prepare.outputs.capacity_tpm }}
         run: |
           set -euo pipefail
 
-          # Fail early if the Azure OpenAI resource is missing or still provisioning.
+          # Fail early if the Azure OpenAI resource is missing or still
+          # provisioning.
           state=$(az cognitiveservices account show \
-            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
+            --resource-group "$RG" \
+            --name "$AOAI" \
             --query properties.provisioningState \
             -o tsv 2>/dev/null || echo "NotFound")
 
           if [[ "$state" != "Succeeded" ]]; then
-            echo "::error::Azure OpenAI resource '${{ needs.prepare.outputs.aoai_resource_name }}' is not ready (state: $state)."
+            echo "::error::Azure OpenAI resource '$AOAI'" \
+              "is not ready (state: $state)."
             exit 1
           fi
 
-          echo "Deploying ${{ needs.prepare.outputs.model_name }}:${{ needs.prepare.outputs.model_version }} to ${{ needs.prepare.outputs.aoai_resource_name }} as ${{ needs.prepare.outputs.deployment_name }}"
+          echo "Deploying $MODEL:$VER to $AOAI as $DEP"
 
           az cognitiveservices account deployment create \
-            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-            --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
-            --model-name "${{ needs.prepare.outputs.model_name }}" \
-            --model-version "${{ needs.prepare.outputs.model_version }}" \
+            --resource-group "$RG" \
+            --name "$AOAI" \
+            --deployment-name "$DEP" \
+            --model-name "$MODEL" \
+            --model-version "$VER" \
             --model-format OpenAI \
-            --sku-name "${{ needs.prepare.outputs.scale_type }}" \
-            --sku-capacity ${{ needs.prepare.outputs.capacity_tpm }}
+            --sku-name "$SCALE" \
+            --sku-capacity "$CAPACITY"
 
       - name: Wait for deployment
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          AOAI: ${{ needs.prepare.outputs.aoai_resource_name }}
+          DEP: ${{ needs.prepare.outputs.deployment_name }}
         run: |
           set -euo pipefail
 
-          # Poll until Azure marks the deployment as ready or returns a terminal failure state.
+          # Poll until Azure marks the deployment as ready or returns a
+          # terminal failure state.
           timeout=300
           interval=15
           elapsed=0
 
           while (( elapsed < timeout )); do
             status=$(az cognitiveservices account deployment show \
-              --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-              --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-              --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+              --resource-group "$RG" \
+              --name "$AOAI" \
+              --deployment-name "$DEP" \
               --query properties.provisioningState \
               -o tsv 2>/dev/null || echo "Unknown")
 
@@ -288,12 +336,17 @@ jobs:
 
       - name: Show deployment
         if: success()
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          AOAI: ${{ needs.prepare.outputs.aoai_resource_name }}
+          DEP: ${{ needs.prepare.outputs.deployment_name }}
         run: |
-          # Prints the final deployment details for quick verification in the Actions logs.
+          # Prints the final deployment details for quick verification in
+          # the Actions logs.
           az cognitiveservices account deployment show \
-            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-            --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+            --resource-group "$RG" \
+            --name "$AOAI" \
+            --deployment-name "$DEP" \
             --output table
 
       - name: Logout
@@ -301,7 +354,8 @@ jobs:
         run: az logout
 
   # Runs only when the requested action is "delete".
-  # Verifies the deployment exists before attempting deletion, then waits until Azure removes it.
+  # Verifies the deployment exists before attempting deletion, then
+  # waits until Azure removes it.
   delete:
     needs: prepare
     if: needs.prepare.outputs.action == 'delete'
@@ -317,27 +371,36 @@ jobs:
           subscription-id: ${{ needs.prepare.outputs.subscription_id }}
 
       - name: Delete deployment
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          AOAI: ${{ needs.prepare.outputs.aoai_resource_name }}
+          DEP: ${{ needs.prepare.outputs.deployment_name }}
         run: |
           set -euo pipefail
 
-          # Confirm the deployment exists so we can return a clearer error if the name is wrong.
+          # Confirm the deployment exists so we can return a clearer error
+          # if the name is wrong.
           if ! az cognitiveservices account deployment show \
-            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-            --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+            --resource-group "$RG" \
+            --name "$AOAI" \
+            --deployment-name "$DEP" \
             --output none 2>/dev/null; then
-            echo "::error::Deployment '${{ needs.prepare.outputs.deployment_name }}' was not found."
+            echo "::error::Deployment '$DEP' was not found."
             exit 1
           fi
 
-          echo "Deleting deployment ${{ needs.prepare.outputs.deployment_name }} from ${{ needs.prepare.outputs.aoai_resource_name }}"
+          echo "Deleting deployment $DEP from $AOAI"
 
           az cognitiveservices account deployment delete \
-            --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-            --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-            --deployment-name "${{ needs.prepare.outputs.deployment_name }}"
+            --resource-group "$RG" \
+            --name "$AOAI" \
+            --deployment-name "$DEP"
 
       - name: Wait for deletion
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          AOAI: ${{ needs.prepare.outputs.aoai_resource_name }}
+          DEP: ${{ needs.prepare.outputs.deployment_name }}
         run: |
           set -euo pipefail
 
@@ -348,9 +411,9 @@ jobs:
 
           while (( elapsed < timeout )); do
             if ! az cognitiveservices account deployment show \
-              --resource-group "${{ needs.prepare.outputs.resource_group }}" \
-              --name "${{ needs.prepare.outputs.aoai_resource_name }}" \
-              --deployment-name "${{ needs.prepare.outputs.deployment_name }}" \
+              --resource-group "$RG" \
+              --name "$AOAI" \
+              --deployment-name "$DEP" \
               --output none 2>/dev/null; then
               echo "Deployment deleted."
               exit 0

@@ -1,0 +1,332 @@
+---
+name: Manage Azure AI Search deployments
+
+"on":
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Choose whether to deploy or delete AI Search assets
+        required: true
+        type: choice
+        options:
+          - deploy
+          - delete
+      environment:
+        description: Choose the target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+      service_name_override:
+        description: Search service name override (optional)
+        required: false
+        type: string
+        default: ""
+      confirm_delete:
+        description: Required only for delete
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.prepare.outputs.action }}
+      github_environment: ${{ steps.prepare.outputs.github_environment }}
+      subscription_id: ${{ steps.prepare.outputs.subscription_id }}
+      resource_group: ${{ steps.prepare.outputs.resource_group }}
+      service_name: ${{ steps.prepare.outputs.service_name }}
+      api_version: ${{ steps.prepare.outputs.api_version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load environment config
+        id: prepare
+        env:
+          ACTION: ${{ inputs.action }}
+          TARGET_ENV: ${{ inputs.environment }}
+          CONFIG_FILE: env-2/${{ inputs.environment }}/config.yml
+          SERVICE_NAME_OVERRIDE: ${{ inputs.service_name_override }}
+          CONFIRM_DELETE: ${{ inputs.confirm_delete }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo "::error::Missing config file: $CONFIG_FILE"
+            exit 1
+          fi
+
+          python3 -m pip install pyyaml
+
+          python3 <<'PY'
+          import os
+          import re
+          import sys
+          import yaml
+
+          config_file = os.environ.get("CONFIG_FILE")
+          if not config_file or not os.path.exists(config_file):
+              print(f"::error::Config file not found: {config_file}")
+              sys.exit(1)
+
+          with open(config_file, "r", encoding="utf-8") as handle:
+              config = yaml.safe_load(handle)
+
+          action = os.environ.get("ACTION")
+          target_env = os.environ.get("TARGET_ENV")
+          confirm_delete = os.environ.get("CONFIRM_DELETE")
+
+          azure = config.get("azure", {})
+          search_cfg = config.get("search_service", {})
+
+          service_name = os.environ.get(
+              "SERVICE_NAME_OVERRIDE"
+          ) or search_cfg.get("service_name")
+          api_version = search_cfg.get("api_version", "2024-07-01")
+
+          # Validate action
+          if action not in ["deploy", "delete"]:
+              print(f"::error::Invalid action: {action}")
+              sys.exit(1)
+
+          # Validate delete confirmation
+          if action == "delete" and confirm_delete != "yes":
+              print(
+                  "::error::Set confirm_delete to 'yes' to "
+                  "delete search assets."
+              )
+              sys.exit(1)
+
+          # Validate service name rules (2-60 chars, lowercase
+          # alphanumeric/hyphen)
+          name_pattern = r"^[a-z0-9]([a-z0-9-]{0,58}[a-z0-9])?$"
+          if not service_name or not re.match(name_pattern, service_name):
+              print(
+                  "::error::Service name must be 2-60 characters, lowercase "
+                  "alphanumeric/hyphen, and cannot start or end with a hyphen."
+              )
+              sys.exit(1)
+
+          # Prepare outputs
+          outputs = {
+              "action": action,
+              "github_environment": config.get("github_environment", ""),
+              "subscription_id": str(azure.get("subscription_id", "")),
+              "resource_group": str(azure.get("resource_group", "")),
+              "service_name": service_name,
+              "api_version": api_version,
+          }
+
+          summary = [
+              "### Azure AI Search asset deployment request",
+              f"- Action: {action}",
+              f"- Environment: {target_env}",
+              f"- Subscription: {outputs['subscription_id']}",
+              f"- Resource group: {outputs['resource_group']}",
+              f"- Service name: {service_name}",
+              f"- API version: {api_version}",
+          ]
+
+          # Write to GITHUB_OUTPUT
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as handle:
+                  for key, value in outputs.items():
+                      handle.write(f"{key}={value}\n")
+
+          # Write to GITHUB_STEP_SUMMARY
+          github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if github_summary:
+              with open(github_summary, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(summary) + "\n")
+          PY
+
+  deploy:
+    needs: prepare
+    if: needs.prepare.outputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.prepare.outputs.github_environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ needs.prepare.outputs.subscription_id }}
+
+      - name: Get Azure AI Search Admin Key
+        id: get_key
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          NAME: ${{ needs.prepare.outputs.service_name }}
+        run: |
+          set -euo pipefail
+          echo "Retrieving admin key for Azure AI Search service '$NAME'" \
+            "in resource group '$RG'..."
+          KEY=$(az search service admin-key list \
+            --resource-group "$RG" \
+            --service-name "$NAME" \
+            --query primaryKey -o tsv)
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Search Assets
+        env:
+          AZURE_SEARCH_KEY: ${{ steps.get_key.outputs.key }}
+          SERVICE_NAME: ${{ needs.prepare.outputs.service_name }}
+          API_VERSION: ${{ needs.prepare.outputs.api_version }}
+          ASSETS_DIR: env-2/${{ inputs.environment }}/search-assets
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$ASSETS_DIR" ]; then
+            echo "No search assets directory found at $ASSETS_DIR." \
+              "Skipping deployment."
+            exit 0
+          fi
+
+          asset_types=(
+            "datasources"
+            "synonymmaps"
+            "skillsets"
+            "indexes"
+            "indexers"
+          )
+
+          for asset_type in "${asset_types[@]}"; do
+            dir="$ASSETS_DIR/$asset_type"
+            if [ -d "$dir" ]; then
+              echo "Processing asset type: $asset_type"
+              for file in "$dir"/*.json; do
+                [ -e "$file" ] || continue
+
+                filename=$(basename "$file")
+                asset_name="${filename%.*}"
+
+                echo "Deploying $asset_name to /$asset_type..."
+
+                http_status=$(curl -s -o response_body.json \
+                  -w "%{http_code}" -X PUT \
+                  -H "Content-Type: application/json" \
+                  -H "api-key: $AZURE_SEARCH_KEY" \
+                  -d @"$file" \
+                  "https://$SERVICE_NAME.search.windows.net/$asset_type/$asset_name?api-version=$API_VERSION")
+
+                if [[ "$http_status" =~ ^2 ]]; then
+                  echo "Successfully deployed $asset_name (HTTP $http_status)"
+                else
+                  echo "::error::Failed to deploy $asset_name" \
+                    "(HTTP $http_status)"
+                  echo "Response body:"
+                  cat response_body.json
+                  exit 1
+                fi
+              done
+            fi
+          done
+
+      - name: Logout
+        if: always()
+        run: az logout
+
+  delete:
+    needs: prepare
+    if: needs.prepare.outputs.action == 'delete'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.prepare.outputs.github_environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ needs.prepare.outputs.subscription_id }}
+
+      - name: Get Azure AI Search Admin Key
+        id: get_key
+        env:
+          RG: ${{ needs.prepare.outputs.resource_group }}
+          NAME: ${{ needs.prepare.outputs.service_name }}
+        run: |
+          set -euo pipefail
+          echo "Retrieving admin key for Azure AI Search service '$NAME'" \
+            "in resource group '$RG'..."
+          KEY=$(az search service admin-key list \
+            --resource-group "$RG" \
+            --service-name "$NAME" \
+            --query primaryKey -o tsv)
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Delete Search Assets
+        env:
+          AZURE_SEARCH_KEY: ${{ steps.get_key.outputs.key }}
+          SERVICE_NAME: ${{ needs.prepare.outputs.service_name }}
+          API_VERSION: ${{ needs.prepare.outputs.api_version }}
+          ASSETS_DIR: env-2/${{ inputs.environment }}/search-assets
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$ASSETS_DIR" ]; then
+            echo "No search assets directory found at $ASSETS_DIR." \
+              "Skipping deletion."
+            exit 0
+          fi
+
+          asset_types=(
+            "indexers"
+            "indexes"
+            "skillsets"
+            "synonymmaps"
+            "datasources"
+          )
+
+          for asset_type in "${asset_types[@]}"; do
+            dir="$ASSETS_DIR/$asset_type"
+            if [ -d "$dir" ]; then
+              echo "Processing asset type: $asset_type"
+              for file in "$dir"/*.json; do
+                [ -e "$file" ] || continue
+
+                filename=$(basename "$file")
+                asset_name="${filename%.*}"
+
+                echo "Deleting $asset_name from /$asset_type..."
+
+                http_status=$(curl -s -o response_body.json \
+                  -w "%{http_code}" -X DELETE \
+                  -H "api-key: $AZURE_SEARCH_KEY" \
+                  "https://$SERVICE_NAME.search.windows.net/$asset_type/$asset_name?api-version=$API_VERSION")
+
+                if [[ "$http_status" =~ ^2 ]] || \
+                   [ "$http_status" -eq 404 ]; then
+                  echo "Successfully deleted $asset_name or it does not" \
+                    "exist (HTTP $http_status)"
+                else
+                  echo "::error::Failed to delete $asset_name" \
+                    "(HTTP $http_status)"
+                  echo "Response body:"
+                  cat response_body.json
+                  exit 1
+                fi
+              done
+            fi
+          done
+
+      - name: Logout
+        if: always()
+        run: az logout
